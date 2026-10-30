@@ -2,7 +2,7 @@ name: GmailBuy 库存监控
 
 on:
   schedule:
-    - cron: '13,43 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
   push:
     paths:
