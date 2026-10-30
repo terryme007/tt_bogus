@@ -102,11 +102,19 @@ def api(method, route, data=None):
         raise RuntimeError(f"GitHub API error HTTP {exc.code}: {detail}") from exc
 
 
+def replace_check(body, check_text):
+    replacement = f"{CHECK_START}\n{check_text}\n{CHECK_END}"
+    pattern = re.escape(CHECK_START) + r"[\s\S]*?" + re.escape(CHECK_END)
+    if re.search(pattern, body):
+        return re.sub(pattern, lambda _: replacement, body, count=1)
+    return body + f"\n\n最近成功检查：\n{replacement}"
+
+
 def main():
     issue = api("GET", f"/issues/{ISSUE}")
     body = issue.get("body") or ""
     state_match = re.search(
-        re.escape(START) + r"\\s*(out|in)\\s*" + re.escape(END),
+        re.escape(START) + r"\s*(out|in)\s*" + re.escape(END),
         body,
     )
     if not state_match:
@@ -116,16 +124,15 @@ def main():
     try:
         stock = fetch_stock()
     except Exception as error:
-        # Record failures so a stale monitor is visible; never treat failure as stock.
         checked = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        detail = str(error).replace("\\n", " ")[:180]
+        detail = str(error).replace("\n", " ")[:180]
         check_text = f"{checked} | ERROR: {detail}"
-        check_pattern = re.escape(CHECK_START) + r"[\\s\\S]*?" + re.escape(CHECK_END)
-        replacement = f"{CHECK_START}\\n{check_text}\\n{CHECK_END}"
-        if re.search(check_pattern, body):
-            body = re.sub(check_pattern, lambda _: replacement, body, count=1)
+        replacement = f"{CHECK_START}\n{check_text}\n{CHECK_END}"
+        pattern = re.escape(CHECK_START) + r"[\s\S]*?" + re.escape(CHECK_END)
+        if re.search(pattern, body):
+            body = re.sub(pattern, lambda _: replacement, body, count=1)
         else:
-            body += f"\\n\\n最近检查：\\n{replacement}"
+            body += f"\n\n最近检查：\n{replacement}"
         api("PATCH", f"/issues/{ISSUE}", {"body": body})
         raise
 
@@ -133,16 +140,8 @@ def main():
     checked = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"Stock: {stock}; previous status: {before}; new status: {after}")
 
-    # Heartbeat is updated on every successful poll, not only the first run.
-    check_text = f"{checked} | stock={stock}"
-    check_pattern = re.escape(CHECK_START) + r"[\\s\\S]*?" + re.escape(CHECK_END)
-    replacement = f"{CHECK_START}\\n{check_text}\\n{CHECK_END}"
-    if re.search(check_pattern, body):
-        body = re.sub(check_pattern, lambda _: replacement, body, count=1)
-    else:
-        body += f"\\n\\n最近成功检查：\\n{replacement}"
+    body = replace_check(body, f"{checked} | stock={stock}")
 
-    # Retain the one-time first-success marker as a historical deployment check.
     probe = "<!-- gmailbuy-stock-monitor:first-success:pending -->"
     if probe in body:
         body = body.replace(
@@ -152,18 +151,17 @@ def main():
         )
         body = body.replace("首次成功检查：等待验证", f"首次成功检查：{checked}，库存 {stock} 件", 1)
 
-    # Notify on every observed transition from sold out to available.
     if before == "out" and after == "in":
         api("POST", f"/issues/{ISSUE}/comments", {
             "body": (
-                f"🔔 **GmailBuy 补货提醒：当前库存 {stock} 件**\\n\\n"
-                f"检测时间：{checked}\\n\\n商品链接：{URL}\\n\\n@terryme007"
+                f"🔔 **GmailBuy 补货提醒：当前库存 {stock} 件**\n\n"
+                f"检测时间：{checked}\n\n商品链接：{URL}\n\n@terryme007"
             )
         })
 
     if before != after:
-        old_marker = f"{START}\\n{before}\\n{END}"
-        new_marker = f"{START}\\n{after}\\n{END}"
+        old_marker = f"{START}\n{before}\n{END}"
+        new_marker = f"{START}\n{after}\n{END}"
         if old_marker not in body:
             raise ValueError("State marker formatting changed; refusing to overwrite")
         body = body.replace(old_marker, new_marker, 1)
