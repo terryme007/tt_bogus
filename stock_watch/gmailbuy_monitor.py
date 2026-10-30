@@ -15,6 +15,8 @@ from html.parser import HTMLParser
 URL = "https://gmailbuy.com/home/goods.html?id=8&sid=8"
 START = "<!-- gmailbuy-stock-monitor:state:start -->"
 END = "<!-- gmailbuy-stock-monitor:state:end -->"
+CHECK_START = "<!-- gmailbuy-stock-monitor:last-check:start -->"
+CHECK_END = "<!-- gmailbuy-stock-monitor:last-check:end -->"
 ISSUE = os.environ["MONITOR_ISSUE_NUMBER"]
 
 
@@ -101,53 +103,73 @@ def api(method, route, data=None):
 
 
 def main():
-    # Fail closed if the page is blocked or the stock indicator is missing.
-    stock = fetch_stock()
     issue = api("GET", f"/issues/{ISSUE}")
     body = issue.get("body") or ""
-    match = re.search(
-        re.escape(START) + r"\s*(out|in)\s*" + re.escape(END),
+    state_match = re.search(
+        re.escape(START) + r"\\s*(out|in)\\s*" + re.escape(END),
         body,
     )
-    if not match:
+    if not state_match:
         raise ValueError("Missing stock state marker in monitoring issue")
-    before = match.group(1)
-    after = "in" if stock > 0 else "out"
-    print(f"Stock: {stock}; previous status: {before}; new status: {after}")
-    # One-time positive confirmation that a scheduled runner fetched the live page.
-    # No comment/mention is sent when stock is still zero.
-    probe = "<!-- gmailbuy-stock-monitor:first-success:pending -->"
-    was_probe = probe in body
-    if was_probe:
+    before = state_match.group(1)
+
+    try:
+        stock = fetch_stock()
+    except Exception as error:
+        # Record failures so a stale monitor is visible; never treat failure as stock.
         checked = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        detail = str(error).replace("\\n", " ")[:180]
+        check_text = f"{checked} | ERROR: {detail}"
+        check_pattern = re.escape(CHECK_START) + r"[\\s\\S]*?" + re.escape(CHECK_END)
+        replacement = f"{CHECK_START}\\n{check_text}\\n{CHECK_END}"
+        if re.search(check_pattern, body):
+            body = re.sub(check_pattern, lambda _: replacement, body, count=1)
+        else:
+            body += f"\\n\\n最近检查：\\n{replacement}"
+        api("PATCH", f"/issues/{ISSUE}", {"body": body})
+        raise
+
+    after = "in" if stock > 0 else "out"
+    checked = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    print(f"Stock: {stock}; previous status: {before}; new status: {after}")
+
+    # Heartbeat is updated on every successful poll, not only the first run.
+    check_text = f"{checked} | stock={stock}"
+    check_pattern = re.escape(CHECK_START) + r"[\\s\\S]*?" + re.escape(CHECK_END)
+    replacement = f"{CHECK_START}\\n{check_text}\\n{CHECK_END}"
+    if re.search(check_pattern, body):
+        body = re.sub(check_pattern, lambda _: replacement, body, count=1)
+    else:
+        body += f"\\n\\n最近成功检查：\\n{replacement}"
+
+    # Retain the one-time first-success marker as a historical deployment check.
+    probe = "<!-- gmailbuy-stock-monitor:first-success:pending -->"
+    if probe in body:
         body = body.replace(
             probe,
             f"<!-- gmailbuy-stock-monitor:first-success:verified;checked={checked};stock={stock} -->",
             1,
         )
         body = body.replace("首次成功检查：等待验证", f"首次成功检查：{checked}，库存 {stock} 件", 1)
-    if before == after:
-        print("No state change; no notification")
-        if was_probe:
-            api("PATCH", f"/issues/{ISSUE}", {"body": body})
-        return
 
-    if after == "in":
-        when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # Notify on every observed transition from sold out to available.
+    if before == "out" and after == "in":
         api("POST", f"/issues/{ISSUE}/comments", {
             "body": (
-                f"🔔 **GmailBuy 补货提醒：当前库存 {stock} 件**\n\n"
-                f"检测时间：{when}\n\n商品链接：{URL}\n\n@terryme007"
+                f"🔔 **GmailBuy 补货提醒：当前库存 {stock} 件**\\n\\n"
+                f"检测时间：{checked}\\n\\n商品链接：{URL}\\n\\n@terryme007"
             )
         })
-    old_marker = f"{START}\n{before}\n{END}"
-    new_marker = f"{START}\n{after}\n{END}"
-    if old_marker not in body:
-        raise ValueError("State marker formatting changed; refusing to overwrite")
-    api("PATCH", f"/issues/{ISSUE}", {
-        "body": body.replace(old_marker, new_marker, 1)
-    })
-    print(f"State changed: {before} -> {after}")
+
+    if before != after:
+        old_marker = f"{START}\\n{before}\\n{END}"
+        new_marker = f"{START}\\n{after}\\n{END}"
+        if old_marker not in body:
+            raise ValueError("State marker formatting changed; refusing to overwrite")
+        body = body.replace(old_marker, new_marker, 1)
+
+    api("PATCH", f"/issues/{ISSUE}", {"body": body})
+    print(f"Heartbeat saved; state: {before} -> {after}")
 
 
 if __name__ == "__main__":
