@@ -114,8 +114,22 @@ def main():
     before = match.group(1)
     after = "in" if stock > 0 else "out"
     print(f"Stock: {stock}; previous status: {before}; new status: {after}")
+    # One-time positive confirmation that a scheduled runner fetched the live page.
+    # No comment/mention is sent when stock is still zero.
+    probe = "<!-- gmailbuy-stock-monitor:first-success:pending -->"
+    was_probe = probe in body
+    if was_probe:
+        checked = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        body = body.replace(
+            probe,
+            f"<!-- gmailbuy-stock-monitor:first-success:verified;checked={checked};stock={stock} -->",
+            1,
+        )
+        body = body.replace("首次成功检查：等待验证", f"首次成功检查：{checked}，库存 {stock} 件", 1)
     if before == after:
-        print("No change; no notification")
+        print("No state change; no notification")
+        if was_probe:
+            api("PATCH", f"/issues/{ISSUE}", {"body": body})
         return
 
     if after == "in":
