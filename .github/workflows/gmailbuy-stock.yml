@@ -1,0 +1,29 @@
+name: GmailBuy 库存监控
+
+on:
+  schedule:
+    - cron: '13,43 * * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - 'stock_watch/gmailbuy_monitor.py'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: gmailbuy-stock-monitor
+  cancel-in-progress: false
+
+jobs:
+  check-stock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch latest stock and notify only on out-to-in transition
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MONITOR_ISSUE_NUMBER: '1'
+        run: python3 stock_watch/gmailbuy_monitor.py
