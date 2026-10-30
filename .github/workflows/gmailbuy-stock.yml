@@ -7,9 +7,11 @@ on:
   push:
     paths:
       - 'stock_watch/gmailbuy_monitor.py'
+      - 'stock_watch/keepalive.py'
+      - '.github/workflows/gmailbuy-stock.yml'
 
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 concurrency:
@@ -27,3 +29,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MONITOR_ISSUE_NUMBER: '1'
         run: python3 stock_watch/gmailbuy_monitor.py
+      - name: Prevent public repo schedule from disabling due to inactivity
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 stock_watch/keepalive.py
